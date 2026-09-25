@@ -47,12 +47,12 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const API_BASE = 'http://127.0.0.1:8000';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 
 function mediaUrl(path) {
   if (!path) return '';
   if (path.startsWith('http')) return path;
-  return API_BASE + path;
+  return API_BASE_URL + path;
 }
 
 function getCroppedImg(imageSrc, pixelCrop) {
@@ -238,7 +238,7 @@ function LoginPage({ onLogin }) {
     setError('');
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/auth/admin-login/', {
+      const res = await fetch(`${API_BASE_URL}/api/auth/admin-login/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone, password }),
@@ -389,7 +389,7 @@ function ProfilePanel({ authData, onClose }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/profile/', {
+    fetch(`${API_BASE_URL}/api/profile/`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
       .then((res) => res.json())
@@ -482,10 +482,10 @@ function GlobalSearch({ accessToken, onClose, onNavigate }) {
       const headers = { Authorization: `Bearer ${accessToken}` };
 
       Promise.allSettled([
-        fetch(`http://127.0.0.1:8000/api/branches/?${params}`, { headers }).then(r => r.json()),
-        fetch(`http://127.0.0.1:8000/api/offers/?${params}`, { headers }).then(r => r.json()),
-        fetch(`http://127.0.0.1:8000/api/banners/?${params}`, { headers }).then(r => r.json()),
-        fetch(`http://127.0.0.1:8000/api/staff/?${params}`, { headers }).then(r => r.json()),
+        fetch(`${API_BASE_URL}/api/branches/?${params}`, { headers }).then(r => r.json()),
+        fetch(`${API_BASE_URL}/api/offers/?${params}`, { headers }).then(r => r.json()),
+        fetch(`${API_BASE_URL}/api/banners/?${params}`, { headers }).then(r => r.json()),
+        fetch(`${API_BASE_URL}/api/staff/?${params}`, { headers }).then(r => r.json()),
       ]).then(([branchesRes, offersRes, bannersRes, staffRes]) => {
         setResults({
           branches: branchesRes.status === 'fulfilled' ? branchesRes.value.results || [] : [],
@@ -869,7 +869,7 @@ function BranchesPage({ authData }) {
       if (search) params.set('search', search);
       if (statusFilter === 'active') params.set('is_active', 'true');
       if (statusFilter === 'inactive') params.set('is_active', 'false');
-      const res = await fetch(`http://127.0.0.1:8000/api/branches/?${params}`, {
+      const res = await fetch(`${API_BASE_URL}/api/branches/?${params}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await res.json();
@@ -889,7 +889,7 @@ function BranchesPage({ authData }) {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await fetch(`http://127.0.0.1:8000/api/branches/${deleteTarget.id}/`, {
+      await fetch(`${API_BASE_URL}/api/branches/${deleteTarget.id}/`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${accessToken}` },
       });
@@ -914,7 +914,7 @@ function BranchesPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/branches/${id}/`, {
+        fetch(`${API_BASE_URL}/api/branches/${id}/`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${accessToken}` },
         })
@@ -930,7 +930,7 @@ function BranchesPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/branches/${id}/`, {
+        fetch(`${API_BASE_URL}/api/branches/${id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ is_active: true }),
@@ -949,7 +949,7 @@ function BranchesPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/branches/${id}/`, {
+        fetch(`${API_BASE_URL}/api/branches/${id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ is_active: false }),
@@ -1113,8 +1113,8 @@ function BranchFormModal({ mode, branch, accessToken, onClose, onSaved }) {
     setSaving(true);
     try {
       const url = mode === 'create'
-        ? 'http://127.0.0.1:8000/api/branches/'
-        : `http://127.0.0.1:8000/api/branches/${branch.id}/`;
+        ? `${API_BASE_URL}/api/branches/`
+        : `${API_BASE_URL}/api/branches/${branch.id}/`;
       const method = mode === 'create' ? 'POST' : 'PUT';
 
       const res = await fetch(url, {
@@ -1199,7 +1199,7 @@ function DashboardPage({ authData }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch('http://127.0.0.1:8000/api/dashboard/', {
+    fetch(`${API_BASE_URL}/api/dashboard/`, {
       headers: { Authorization: `Bearer ${authData.access}` },
     })
       .then((res) => res.json())
@@ -1262,7 +1262,7 @@ function BranchCheckDropdown({ selected, onChange, accessToken }) {
   const ref = useRef(null);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/branches/', {
+    fetch(`${API_BASE_URL}/api/branches/`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
       .then((r) => r.json())
@@ -1347,8 +1347,8 @@ function OfferFormModal({ mode, offer, accessToken, onClose, onSaved }) {
     setSaving(true);
     try {
       const url = mode === 'create'
-        ? 'http://127.0.0.1:8000/api/offers/'
-        : `http://127.0.0.1:8000/api/offers/${offer.id}/`;
+        ? `${API_BASE_URL}/api/offers/`
+        : `${API_BASE_URL}/api/offers/${offer.id}/`;
       const method = mode === 'create' ? 'POST' : 'PUT';
       const hasImage = form.image instanceof File;
 
@@ -1629,7 +1629,7 @@ function OfferCalendar({ offers, accessToken, onRefresh, onEditOffer }) {
       }
 
       try {
-        await fetch(`http://127.0.0.1:8000/api/offers/${dragging.offer.id}/`, {
+        await fetch(`${API_BASE_URL}/api/offers/${dragging.offer.id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify(patch),
@@ -1757,7 +1757,7 @@ function OffersPage({ authData }) {
     try {
       const params = new URLSearchParams({ page, page_size: pageSize });
       if (search) params.set('search', search);
-      const res = await fetch(`http://127.0.0.1:8000/api/offers/admin_all/?${params}`, {
+      const res = await fetch(`${API_BASE_URL}/api/offers/admin_all/?${params}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await res.json();
@@ -1795,7 +1795,7 @@ function OffersPage({ authData }) {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await fetch(`http://127.0.0.1:8000/api/offers/${deleteTarget.id}/`, {
+      await fetch(`${API_BASE_URL}/api/offers/${deleteTarget.id}/`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${accessToken}` },
       });
@@ -1820,7 +1820,7 @@ function OffersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/offers/${id}/`, {
+        fetch(`${API_BASE_URL}/api/offers/${id}/`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${accessToken}` },
         })
@@ -1836,7 +1836,7 @@ function OffersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/offers/${id}/`, {
+        fetch(`${API_BASE_URL}/api/offers/${id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ is_active: true }),
@@ -1855,7 +1855,7 @@ function OffersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/offers/${id}/`, {
+        fetch(`${API_BASE_URL}/api/offers/${id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ is_active: false }),
@@ -2047,7 +2047,7 @@ function StaffFormModal({ mode, staff, accessToken, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/branches/', {
+    fetch(`${API_BASE_URL}/api/branches/`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
       .then((r) => r.json())
@@ -2066,8 +2066,8 @@ function StaffFormModal({ mode, staff, accessToken, onClose, onSaved }) {
     try {
       const isCreate = mode === 'create';
       const url = isCreate
-        ? 'http://127.0.0.1:8000/api/staff/'
-        : `http://127.0.0.1:8000/api/staff/${staff.id}/`;
+        ? `${API_BASE_URL}/api/staff/`
+        : `${API_BASE_URL}/api/staff/${staff.id}/`;
       const method = isCreate ? 'POST' : 'PATCH';
 
       const body = {
@@ -2177,7 +2177,7 @@ function UsersPage({ authData }) {
     try {
       const params = new URLSearchParams({ page, page_size: pageSize });
       if (search) params.set('search', search);
-      const res = await fetch(`http://127.0.0.1:8000/api/staff/?${params}`, {
+      const res = await fetch(`${API_BASE_URL}/api/staff/?${params}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await res.json();
@@ -2201,7 +2201,7 @@ function UsersPage({ authData }) {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await fetch(`http://127.0.0.1:8000/api/staff/${deleteTarget.id}/`, {
+      await fetch(`${API_BASE_URL}/api/staff/${deleteTarget.id}/`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${accessToken}` },
       });
@@ -2226,7 +2226,7 @@ function UsersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/staff/${id}/`, {
+        fetch(`${API_BASE_URL}/api/staff/${id}/`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${accessToken}` },
         })
@@ -2242,7 +2242,7 @@ function UsersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/staff/${id}/`, {
+        fetch(`${API_BASE_URL}/api/staff/${id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ is_active: true }),
@@ -2261,7 +2261,7 @@ function UsersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/staff/${id}/`, {
+        fetch(`${API_BASE_URL}/api/staff/${id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ is_active: false }),
@@ -2446,7 +2446,7 @@ function BannerFormModal({ mode, banner, accessToken, onClose, onSaved }) {
   const [cropperSrc, setCropperSrc] = useState(null);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/offers/', {
+    fetch(`${API_BASE_URL}/api/offers/`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
       .then((r) => r.json())
@@ -2481,8 +2481,8 @@ function BannerFormModal({ mode, banner, accessToken, onClose, onSaved }) {
     setSaving(true);
     try {
       const url = mode === 'create'
-        ? 'http://127.0.0.1:8000/api/banners/'
-        : `http://127.0.0.1:8000/api/banners/${banner.id}/`;
+        ? `${API_BASE_URL}/api/banners/`
+        : `${API_BASE_URL}/api/banners/${banner.id}/`;
       const method = mode === 'create' ? 'POST' : 'PUT';
       const hasImage = form.image instanceof File;
 
@@ -2640,7 +2640,7 @@ function BannersPage({ authData }) {
     try {
       const params = new URLSearchParams({ page, page_size: pageSize });
       if (search) params.set('search', search);
-      const res = await fetch(`http://127.0.0.1:8000/api/banners/?${params}`, {
+      const res = await fetch(`${API_BASE_URL}/api/banners/?${params}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await res.json();
@@ -2664,7 +2664,7 @@ function BannersPage({ authData }) {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await fetch(`http://127.0.0.1:8000/api/banners/${deleteTarget.id}/`, {
+      await fetch(`${API_BASE_URL}/api/banners/${deleteTarget.id}/`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${accessToken}` },
       });
@@ -2689,7 +2689,7 @@ function BannersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/banners/${id}/`, {
+        fetch(`${API_BASE_URL}/api/banners/${id}/`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${accessToken}` },
         })
@@ -2705,7 +2705,7 @@ function BannersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/banners/${id}/`, {
+        fetch(`${API_BASE_URL}/api/banners/${id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ is_active: true }),
@@ -2724,7 +2724,7 @@ function BannersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`http://127.0.0.1:8000/api/banners/${id}/`, {
+        fetch(`${API_BASE_URL}/api/banners/${id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ is_active: false }),
@@ -2877,7 +2877,7 @@ function ActivityLogPage({ authData }) {
       if (entityFilter !== 'all') params.set('entity_type', entityFilter);
       if (actionFilter !== 'all') params.set('action', actionFilter);
       const qs = params.toString();
-      const res = await fetch(`http://127.0.0.1:8000/api/activity-logs/${qs ? '?' + qs : ''}`, {
+      const res = await fetch(`${API_BASE_URL}/api/activity-logs/${qs ? '?' + qs : ''}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await res.json();
