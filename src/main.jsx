@@ -4,6 +4,8 @@ import Cropper from 'react-easy-crop';
 import * as XLSX from 'xlsx';
 import {
   CalendarDays,
+  Bell,
+  ClipboardList,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -13,6 +15,7 @@ import {
   Crop,
   Download,
   Edit3,
+  ExternalLink,
   Eye,
   EyeOff,
   Filter,
@@ -46,8 +49,94 @@ import {
   X,
 } from 'lucide-react';
 import './styles.css';
+import { CustomFormsPage, PublicFormPage } from './customForms';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const AUTH_STORAGE_KEY = 'admin-auth';
+
+function readStoredAuth() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || 'null');
+    return parsed && parsed.access && parsed.refresh ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+let session = readStoredAuth();
+let refreshInFlight = null;
+const sessionListeners = new Set();
+
+function getSession() {
+  return session;
+}
+
+function setSession(next) {
+  session = next;
+  try {
+    if (next) localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(next));
+    else localStorage.removeItem(AUTH_STORAGE_KEY);
+  } catch {
+    /* storage unavailable, session stays in memory only */
+  }
+  sessionListeners.forEach((fn) => fn(next));
+}
+
+function subscribeToSession(fn) {
+  sessionListeners.add(fn);
+  return () => { sessionListeners.delete(fn); };
+}
+
+function refreshSession() {
+  if (refreshInFlight) return refreshInFlight;
+
+  const currentRefresh = session?.refresh;
+  if (!currentRefresh) {
+    setSession(null);
+    return Promise.resolve(null);
+  }
+
+  refreshInFlight = fetch(`${API_BASE_URL}/api/auth/refresh/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh: currentRefresh }),
+  })
+    .then(async (res) => {
+      if (res.ok) return res.json();
+      if (res.status === 400 || res.status === 401) setSession(null);
+      return null;
+    })
+    .then((data) => {
+      if (!data?.access) return null;
+      const next = { ...session, access: data.access, refresh: data.refresh || session.refresh };
+      setSession(next);
+      return next;
+    })
+    .catch(() => null)
+    .finally(() => { refreshInFlight = null; });
+
+  return refreshInFlight;
+}
+
+async function apiFetch(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  const access = session?.access;
+  if (access) headers.Authorization = `Bearer ${access}`;
+
+  const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+
+  if (res.status === 401 && session?.refresh) {
+    const refreshed = await refreshSession();
+    if (refreshed) {
+      return fetch(`${API_BASE_URL}${path}`, {
+        ...options,
+        headers: { ...headers, Authorization: `Bearer ${refreshed.access}` },
+      });
+    }
+  }
+
+  return res;
+}
 
 function mediaUrl(path) {
   if (!path) return '';
@@ -197,12 +286,14 @@ const defaultNavItems = [
   { icon: Store, label: 'Branches' },
   { icon: Grid2X2Plus, label: 'Offers' },
   { icon: Image, label: 'Banners' },
+  { icon: Bell, label: 'Notifications' },
+  { icon: ClipboardList, label: 'Forms' },
   { icon: Users, label: 'Users' },
   { icon: Clock3, label: 'Activity' },
   { icon: Settings, label: 'Settings' },
 ];
 
-const iconMap = { Home, Store, Grid2X2Plus, Image, Users, Settings };
+const iconMap = { Home, Store, Grid2X2Plus, Image, Bell, ClipboardList, Users, Settings };
 
 function loadNavItems() {
   try {
@@ -384,21 +475,18 @@ function Sidebar({ activePage, onNavigate, navItems, editMode, onToggleEdit, onR
 }
 
 function ProfilePanel({ authData, onClose }) {
-  const accessToken = authData.access;
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/profile/`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
+    apiFetch(`/api/profile/`)
       .then((res) => res.json())
       .then((data) => {
         setProfile(data);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [accessToken]);
+  }, []);
 
   const user = profile || authData.user;
 
@@ -460,7 +548,7 @@ function ProfilePanel({ authData, onClose }) {
   );
 }
 
-function GlobalSearch({ accessToken, onClose, onNavigate }) {
+function GlobalSearch({ onClose, onNavigate }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState({ branches: [], offers: [], banners: [], staff: [] });
   const [loading, setLoading] = useState(false);
@@ -479,13 +567,12 @@ function GlobalSearch({ accessToken, onClose, onNavigate }) {
     const timer = setTimeout(() => {
       setLoading(true);
       const params = new URLSearchParams({ search: query, page_size: 10 });
-      const headers = { Authorization: `Bearer ${accessToken}` };
 
       Promise.allSettled([
-        fetch(`${API_BASE_URL}/api/branches/?${params}`, { headers }).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/offers/?${params}`, { headers }).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/banners/?${params}`, { headers }).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/staff/?${params}`, { headers }).then(r => r.json()),
+        apiFetch(`/api/branches/?${params}`).then(r => r.json()),
+        apiFetch(`/api/offers/?${params}`).then(r => r.json()),
+        apiFetch(`/api/banners/?${params}`).then(r => r.json()),
+        apiFetch(`/api/staff/?${params}`).then(r => r.json()),
       ]).then(([branchesRes, offersRes, bannersRes, staffRes]) => {
         setResults({
           branches: branchesRes.status === 'fulfilled' ? branchesRes.value.results || [] : [],
@@ -498,12 +585,12 @@ function GlobalSearch({ accessToken, onClose, onNavigate }) {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [query, accessToken]);
+  }, [query]);
 
   const hasResults = results.branches.length || results.offers.length || results.banners.length || results.staff.length;
 
-  const handleResultClick = (page) => {
-    onNavigate(page);
+  const handleResultClick = (page, options) => {
+    onNavigate(page, options);
     onClose();
   };
 
@@ -539,7 +626,7 @@ function GlobalSearch({ accessToken, onClose, onNavigate }) {
                 <Store size={14} /> Branches ({results.branches.length})
               </button>
               {results.branches.map((b) => (
-                <button className="search-result-item" key={`b-${b.id}`} onClick={() => handleResultClick('Branches')}>
+                <button className="search-result-item" key={`b-${b.id}`} onClick={() => handleResultClick('Branches', { branch: { id: b.id, name: b.name } })}>
                   <span className="search-result-avatar">{b.name?.[0] || 'B'}</span>
                   <div>
                     <strong>{b.name}</strong>
@@ -657,21 +744,24 @@ function MetricCard({ icon: Icon, label, value, delta, tone }) {
       <div className={`metric-icon ${tone}`}>
         <Icon size={23} />
       </div>
-      <div>
+      <div className="metric-body">
         <p>{label}</p>
-        <strong>{value}</strong>
         <span>{delta}</span>
       </div>
+      <strong className="metric-value">{value}</strong>
     </article>
   );
 }
 
-function LineOverview({ overview }) {
+function LineOverview({ overview, periodLabel }) {
   const labels = overview?.labels || [];
   const active = overview?.active || [];
   const posts = overview?.posts || [];
 
-  const xs = [58, 143, 228, 313, 398, 483, 568];
+  const pointCount = Math.max(labels.length, active.length, posts.length, 1);
+  const xs = Array.from({ length: pointCount }, (_, i) => (
+    pointCount === 1 ? 332 : 58 + (510 * i) / (pointCount - 1)
+  ));
   const baseY = 260;
   const max = Math.max(1, ...active, ...posts);
 
@@ -689,7 +779,7 @@ function LineOverview({ overview }) {
     <section className="panel chart-panel">
       <div className="panel-header">
         <h2>Offers Overview</h2>
-        <button className="pill-button">This Week <ChevronDown size={14} /></button>
+        <span className="pill-button">{periodLabel}</span>
       </div>
       <div className="legend">
         <span><i className="active-line" />Active Offers</span>
@@ -725,13 +815,13 @@ function LineOverview({ overview }) {
   );
 }
 
-function BranchPanel({ topBranches = [] }) {
+function BranchPanel({ topBranches = [], onViewAll }) {
   const tones = ['indigo', 'blue', 'orange', 'purple', 'teal'];
   return (
     <section className="panel branch-panel">
       <div className="panel-header">
         <h2>Top Performing Branches</h2>
-        <button className="small-button">View All</button>
+        <button type="button" className="small-button" onClick={onViewAll}>View All</button>
       </div>
       <div className="branch-list">
         {topBranches.map((b, index) => (
@@ -759,12 +849,12 @@ function Thumbnail({ image, title }) {
   );
 }
 
-function PostsPanel({ recentPosts = [] }) {
+function PostsPanel({ recentPosts = [], onViewAll }) {
   return (
     <section className="panel posts-panel">
       <div className="panel-header">
         <h2>Recent Offer Posts</h2>
-        <button className="small-button">View All</button>
+        <button type="button" className="small-button" onClick={onViewAll}>View All</button>
       </div>
       <div className="post-list">
         {recentPosts.map((post) => {
@@ -848,8 +938,7 @@ function BulkActionBar({ count, onDelete, onSetActive, onSetInactive, onClear, b
   );
 }
 
-function BranchesPage({ authData }) {
-  const accessToken = authData.access;
+function BranchesPage({ selectedBranch, onClearSelectedBranch }) {
   const [branches, setBranches] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -867,11 +956,10 @@ function BranchesPage({ authData }) {
     try {
       const params = new URLSearchParams({ page, page_size: pageSize });
       if (search) params.set('search', search);
+      if (selectedBranch?.id) params.set('branch_id', selectedBranch.id);
       if (statusFilter === 'active') params.set('is_active', 'true');
       if (statusFilter === 'inactive') params.set('is_active', 'false');
-      const res = await fetch(`${API_BASE_URL}/api/branches/?${params}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const res = await apiFetch(`/api/branches/?${params}`);
       const data = await res.json();
       setBranches(data.results || []);
       setTotal(data.count || 0);
@@ -880,18 +968,21 @@ function BranchesPage({ authData }) {
     } finally {
       setLoading(false);
     }
-  }, [page, search, statusFilter, accessToken]);
+  }, [page, search, statusFilter, selectedBranch?.id]);
 
   useEffect(() => { fetchBranches(); }, [fetchBranches]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedBranch?.id]);
 
   const filteredBranches = branches;
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await fetch(`${API_BASE_URL}/api/branches/${deleteTarget.id}/`, {
+      await apiFetch(`/api/branches/${deleteTarget.id}/`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${accessToken}` },
       });
       setDeleteTarget(null);
       fetchBranches();
@@ -914,9 +1005,8 @@ function BranchesPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/branches/${id}/`, {
+        apiFetch(`/api/branches/${id}/`, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${accessToken}` },
         })
       )
     );
@@ -930,9 +1020,9 @@ function BranchesPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/branches/${id}/`, {
+        apiFetch(`/api/branches/${id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: true }),
         })
       )
@@ -949,9 +1039,9 @@ function BranchesPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/branches/${id}/`, {
+        apiFetch(`/api/branches/${id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: false }),
         })
       )
@@ -979,6 +1069,11 @@ function BranchesPage({ authData }) {
           <h2>Branches</h2>
         </div>
         <div className="filters">
+          {selectedBranch && (
+            <button type="button" className="small-button" onClick={onClearSelectedBranch} title="Show all branches">
+              {selectedBranch.name} <X size={15} />
+            </button>
+          )}
           <div className="search-field">
             <Search size={17} />
             <input type="text" placeholder="Search branches..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
@@ -1061,7 +1156,6 @@ function BranchesPage({ authData }) {
         <BranchFormModal
           mode={modal.mode}
           branch={modal.branch}
-          accessToken={accessToken}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); fetchBranches(); }}
         />
@@ -1094,7 +1188,7 @@ function BranchesPage({ authData }) {
   );
 }
 
-function BranchFormModal({ mode, branch, accessToken, onClose, onSaved }) {
+function BranchFormModal({ mode, branch, onClose, onSaved }) {
   const [form, setForm] = useState({
     name: branch?.name || '',
     address: branch?.address || '',
@@ -1112,17 +1206,14 @@ function BranchFormModal({ mode, branch, accessToken, onClose, onSaved }) {
     e.preventDefault();
     setSaving(true);
     try {
-      const url = mode === 'create'
-        ? `${API_BASE_URL}/api/branches/`
-        : `${API_BASE_URL}/api/branches/${branch.id}/`;
+      const path = mode === 'create'
+        ? '/api/branches/'
+        : `/api/branches/${branch.id}/`;
       const method = mode === 'create' ? 'POST' : 'PUT';
 
-      const res = await fetch(url, {
+      const res = await apiFetch(path, {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       });
 
@@ -1155,7 +1246,7 @@ function BranchFormModal({ mode, branch, accessToken, onClose, onSaved }) {
 
         <label className="modal-field">
           <span>Phone</span>
-          <input type="text" value={form.phone} onChange={handleChange('phone')} required />
+          <input type="tel" inputMode="numeric" pattern="[0-9]{10}" minLength="10" maxLength="10" title="Enter a valid 10-digit phone number" value={form.phone} onChange={handleChange('phone')} required />
         </label>
 
         <label className="modal-check">
@@ -1178,43 +1269,88 @@ const dashboardIcons = {
   total_branches: Store,
   active_offers: PackageOpen,
   offer_posts: CalendarDays,
-  total_views: Eye,
 };
 
-function currentWeekLabel() {
+const hiddenMetrics = new Set(['total_views']);
+
+function dateInputValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function thisMonthRange() {
   const start = new Date();
-  start.setDate(start.getDate() - start.getDay() + 1);
+  start.setDate(1);
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
-  end.setDate(end.getDate() + 6);
+  end.setMonth(end.getMonth() + 1);
+  end.setDate(0);
+  return { start: dateInputValue(start), end: dateInputValue(end) };
+}
+
+function dateRangeLabel(range) {
+  const start = new Date(`${range.start}T00:00:00`);
+  const end = new Date(`${range.end}T00:00:00`);
   const opts = { day: 'numeric', month: 'short', year: 'numeric' };
   return `${start.toLocaleDateString('en-IN', opts)} - ${end.toLocaleDateString('en-IN', opts)}`;
 }
 
-function DashboardPage({ authData }) {
+function DashboardPage({ authData, onNavigate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
+  const [appliedRange, setAppliedRange] = useState(() => thisMonthRange());
+  const [draftRange, setDraftRange] = useState(() => thisMonthRange());
+  const [dateError, setDateError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`${API_BASE_URL}/api/dashboard/`, {
-      headers: { Authorization: `Bearer ${authData.access}` },
-    })
-      .then((res) => res.json())
+    setError('');
+    const params = new URLSearchParams({ start_date: appliedRange.start, end_date: appliedRange.end });
+    apiFetch(`/api/dashboard/?${params}`)
+      .then(async (res) => {
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.detail || 'Failed to load dashboard data');
+        return json;
+      })
       .then((json) => {
         if (cancelled) return;
         setData(json);
         setLoading(false);
       })
-      .catch(() => {
+      .catch((requestError) => {
         if (cancelled) return;
-        setError('Failed to load dashboard data');
+        setError(requestError.message || 'Failed to load dashboard data');
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [authData.access]);
+  }, [appliedRange]);
+
+  const applyDateRange = () => {
+    if (!draftRange.start || !draftRange.end) {
+      setDateError('Choose both a start and end date.');
+      return;
+    }
+    if (draftRange.start > draftRange.end) {
+      setDateError('The end date must be on or after the start date.');
+      return;
+    }
+    setDateError('');
+    setAppliedRange(draftRange);
+    setIsDatePickerOpen(false);
+  };
+
+  const resetToThisMonth = () => {
+    const range = thisMonthRange();
+    setDraftRange(range);
+    setAppliedRange(range);
+    setDateError('');
+    setIsDatePickerOpen(false);
+  };
 
   if (loading) {
     return <p className="table-loading">Loading dashboard...</p>;
@@ -1224,10 +1360,12 @@ function DashboardPage({ authData }) {
     return <p className="table-loading">{error || 'No dashboard data available'}</p>;
   }
 
-  const metrics = data.metrics.map((m) => ({
-    ...m,
-    icon: dashboardIcons[m.key] || PackageOpen,
-  }));
+  const metrics = data.metrics
+    .filter((m) => !hiddenMetrics.has(m.key))
+    .map((m) => ({
+      ...m,
+      icon: dashboardIcons[m.key] || PackageOpen,
+    }));
 
   return (
     <>
@@ -1237,8 +1375,22 @@ function DashboardPage({ authData }) {
           <h2>Manage offers across all branches<br />and grow your business.</h2>
         </div>
         <div className="filters">
-          <button><CalendarDays size={18} />{currentWeekLabel()} <ChevronDown size={15} /></button>
-          <button><Filter size={17} />Filter</button>
+          <div className="dashboard-date-filter">
+            <button type="button" onClick={() => { setDraftRange(appliedRange); setDateError(''); setIsDatePickerOpen((open) => !open); }} aria-expanded={isDatePickerOpen}>
+              <CalendarDays size={18} />{dateRangeLabel(appliedRange)} <ChevronDown size={15} />
+            </button>
+            {isDatePickerOpen && (
+              <div className="date-filter-popover">
+                <label>From<input type="date" value={draftRange.start} onChange={(e) => setDraftRange((range) => ({ ...range, start: e.target.value }))} /></label>
+                <label>To<input type="date" value={draftRange.end} onChange={(e) => setDraftRange((range) => ({ ...range, end: e.target.value }))} /></label>
+                {dateError && <p className="date-filter-error">{dateError}</p>}
+                <div className="date-filter-actions">
+                  <button type="button" className="small-button" onClick={resetToThisMonth}>This month</button>
+                  <button type="button" className="primary-button" onClick={applyDateRange}>Apply</button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1247,28 +1399,29 @@ function DashboardPage({ authData }) {
       </section>
 
       <section className="dashboard-grid">
-        <LineOverview overview={data.overview} />
-        <BranchPanel topBranches={data.top_branches} />
-        <PostsPanel recentPosts={data.recent_posts} />
+        <LineOverview overview={data.overview} periodLabel={dateRangeLabel(appliedRange)} />
+        <BranchPanel topBranches={data.top_branches} onViewAll={() => onNavigate('Branches')} />
+        <PostsPanel recentPosts={data.recent_posts} onViewAll={() => onNavigate('Offers')} />
         <DonutPanel distribution={data.status_distribution} />
       </section>
     </>
   );
 }
 
-function BranchCheckDropdown({ selected, onChange, accessToken }) {
+function BranchCheckDropdown({ selected, onChange, branches: suppliedBranches }) {
   const [open, setOpen] = useState(false);
-  const [branches, setBranches] = useState([]);
+  const [fetchedBranches, setFetchedBranches] = useState([]);
   const ref = useRef(null);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/branches/`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
+    if (suppliedBranches) return;
+    apiFetch(`/api/branches/`)
       .then((r) => r.json())
-      .then((data) => setBranches(data.results || []))
+      .then((data) => setFetchedBranches(data.results || []))
       .catch(() => {});
-  }, [accessToken]);
+  }, [suppliedBranches]);
+
+  const branches = suppliedBranches || fetchedBranches;
 
   useEffect(() => {
     const handler = (e) => {
@@ -1304,7 +1457,7 @@ function BranchCheckDropdown({ selected, onChange, accessToken }) {
   );
 }
 
-function OfferFormModal({ mode, offer, accessToken, onClose, onSaved }) {
+function OfferFormModal({ mode, offer, onClose, onSaved }) {
   const [form, setForm] = useState({
     title: offer?.title || '',
     description: offer?.description || '',
@@ -1346,14 +1499,14 @@ function OfferFormModal({ mode, offer, accessToken, onClose, onSaved }) {
     e.preventDefault();
     setSaving(true);
     try {
-      const url = mode === 'create'
-        ? `${API_BASE_URL}/api/offers/`
-        : `${API_BASE_URL}/api/offers/${offer.id}/`;
+      const path = mode === 'create'
+        ? '/api/offers/'
+        : `/api/offers/${offer.id}/`;
       const method = mode === 'create' ? 'POST' : 'PUT';
       const hasImage = form.image instanceof File;
 
       let body;
-      let headers = { Authorization: `Bearer ${accessToken}` };
+      let headers = {};
 
       if (hasImage) {
         body = new FormData();
@@ -1378,7 +1531,7 @@ function OfferFormModal({ mode, offer, accessToken, onClose, onSaved }) {
         });
       }
 
-      const res = await fetch(url, { method, headers, body });
+      const res = await apiFetch(path, { method, headers, body });
       if (!res.ok) throw new Error('Failed to save offer');
       onSaved();
     } catch (err) {
@@ -1443,7 +1596,7 @@ function OfferFormModal({ mode, offer, accessToken, onClose, onSaved }) {
 
             <label className="modal-field">
               <span>Branches</span>
-              <BranchCheckDropdown selected={selectedBranchIds} onChange={setSelectedBranchIds} accessToken={accessToken} />
+              <BranchCheckDropdown selected={selectedBranchIds} onChange={setSelectedBranchIds} />
             </label>
 
             <label className="modal-check">
@@ -1472,7 +1625,7 @@ function OfferFormModal({ mode, offer, accessToken, onClose, onSaved }) {
   );
 }
 
-function OfferCalendar({ offers, accessToken, onRefresh, onEditOffer }) {
+function OfferCalendar({ offers, onRefresh, onEditOffer }) {
   const today = new Date();
   const [weekStart, setWeekStart] = useState(() => {
     const d = new Date(today);
@@ -1629,9 +1782,9 @@ function OfferCalendar({ offers, accessToken, onRefresh, onEditOffer }) {
       }
 
       try {
-        await fetch(`${API_BASE_URL}/api/offers/${dragging.offer.id}/`, {
+        await apiFetch(`/api/offers/${dragging.offer.id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch),
         });
         onRefresh();
@@ -1647,7 +1800,7 @@ function OfferCalendar({ offers, accessToken, onRefresh, onEditOffer }) {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragging, weekStart, weekEnd, accessToken, onRefresh, onEditOffer]);
+  }, [dragging, weekStart, weekEnd, onRefresh, onEditOffer]);
 
   const weekLabel = () => {
     const opts = { day: 'numeric', month: 'short', year: 'numeric' };
@@ -1737,8 +1890,7 @@ function OfferCalendar({ offers, accessToken, onRefresh, onEditOffer }) {
   );
 }
 
-function OffersPage({ authData }) {
-  const accessToken = authData.access;
+function OffersPage() {
   const [offers, setOffers] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -1757,9 +1909,7 @@ function OffersPage({ authData }) {
     try {
       const params = new URLSearchParams({ page, page_size: pageSize });
       if (search) params.set('search', search);
-      const res = await fetch(`${API_BASE_URL}/api/offers/admin_all/?${params}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const res = await apiFetch(`/api/offers/admin_all/?${params}`);
       const data = await res.json();
       setOffers(Array.isArray(data) ? data : data.results || []);
       setTotal(Array.isArray(data) ? data.length : data.count || 0);
@@ -1768,7 +1918,7 @@ function OffersPage({ authData }) {
     } finally {
       setLoading(false);
     }
-  }, [page, search, accessToken]);
+  }, [page, search]);
 
   useEffect(() => { fetchOffers(); }, [fetchOffers]);
 
@@ -1795,9 +1945,8 @@ function OffersPage({ authData }) {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await fetch(`${API_BASE_URL}/api/offers/${deleteTarget.id}/`, {
+      await apiFetch(`/api/offers/${deleteTarget.id}/`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${accessToken}` },
       });
       setDeleteTarget(null);
       fetchOffers();
@@ -1820,9 +1969,8 @@ function OffersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/offers/${id}/`, {
+        apiFetch(`/api/offers/${id}/`, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${accessToken}` },
         })
       )
     );
@@ -1836,9 +1984,9 @@ function OffersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/offers/${id}/`, {
+        apiFetch(`/api/offers/${id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: true }),
         })
       )
@@ -1855,9 +2003,9 @@ function OffersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/offers/${id}/`, {
+        apiFetch(`/api/offers/${id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: false }),
         })
       )
@@ -1928,7 +2076,7 @@ function OffersPage({ authData }) {
           {loading ? (
             <p className="table-loading">Loading offers...</p>
           ) : (
-            <OfferCalendar offers={filteredOffers} accessToken={accessToken} onRefresh={fetchOffers} onEditOffer={(o) => setModal({ mode: 'edit', offer: o })} />
+            <OfferCalendar offers={filteredOffers} onRefresh={fetchOffers} onEditOffer={(o) => setModal({ mode: 'edit', offer: o })} />
           )}
         </section>
       ) : (
@@ -2001,7 +2149,6 @@ function OffersPage({ authData }) {
         <OfferFormModal
           mode={modal.mode}
           offer={modal.offer}
-          accessToken={accessToken}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); fetchOffers(); }}
         />
@@ -2034,7 +2181,7 @@ function OffersPage({ authData }) {
   );
 }
 
-function StaffFormModal({ mode, staff, accessToken, onClose, onSaved }) {
+function StaffFormModal({ mode, staff, onClose, onSaved }) {
   const [form, setForm] = useState({
     name: staff?.name || '',
     phone: staff?.phone || '',
@@ -2045,29 +2192,53 @@ function StaffFormModal({ mode, staff, accessToken, onClose, onSaved }) {
   });
   const [branches, setBranches] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [changePassword, setChangePassword] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/branches/`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
+    apiFetch(`/api/branches/`)
       .then((r) => r.json())
       .then((data) => setBranches(data.results || []))
       .catch(() => {});
-  }, [accessToken]);
+  }, []);
 
   const handleChange = (field) => (e) => {
     const value = field === 'is_active' ? e.target.checked : e.target.value;
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
+  const cancelPasswordChange = () => {
+    setChangePassword(false);
+    setConfirmPassword('');
+    setError('');
+    setForm((prev) => ({ ...prev, password: '' }));
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError('');
+    const isCreate = mode === 'create';
+
+    if (isCreate) {
+      if (form.password.length < 8) {
+        setError('Password must be at least 8 characters.');
+        return;
+      }
+    } else if (changePassword) {
+      if (form.password.length < 8) {
+        setError('Password must be at least 8 characters.');
+        return;
+      }
+      if (form.password !== confirmPassword) {
+        setError('Passwords do not match.');
+        return;
+      }
+    }
+
     setSaving(true);
     try {
-      const isCreate = mode === 'create';
-      const url = isCreate
-        ? `${API_BASE_URL}/api/staff/`
-        : `${API_BASE_URL}/api/staff/${staff.id}/`;
+      const path = isCreate ? '/api/staff/' : `/api/staff/${staff.id}/`;
       const method = isCreate ? 'POST' : 'PATCH';
 
       const body = {
@@ -2076,21 +2247,25 @@ function StaffFormModal({ mode, staff, accessToken, onClose, onSaved }) {
         role: form.role,
         is_active: form.is_active,
       };
-      if (form.password) body.password = form.password;
+      if (isCreate || changePassword) body.password = form.password;
       if (form.managed_branch) body.managed_branch = parseInt(form.managed_branch);
 
-      const res = await fetch(url, {
+      const res = await apiFetch(path, {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
 
-      if (!res.ok) throw new Error('Failed to save staff');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const firstError = Object.values(data)[0];
+        throw new Error(
+          Array.isArray(firstError) ? firstError[0] : firstError || 'Failed to save staff'
+        );
+      }
       onSaved();
     } catch (err) {
+      setError(err.message || 'Failed to save staff');
       console.error(err);
     } finally {
       setSaving(false);
@@ -2113,13 +2288,37 @@ function StaffFormModal({ mode, staff, accessToken, onClose, onSaved }) {
 
           <div className="modal-field">
             <span>Phone</span>
-            <input type="text" value={form.phone} onChange={handleChange('phone')} required />
+            <input type="tel" inputMode="numeric" pattern="[0-9]{10}" minLength="10" maxLength="10" title="Enter a valid 10-digit phone number" value={form.phone} onChange={handleChange('phone')} required />
           </div>
 
-          <div className="modal-field">
-            <span>{mode === 'create' ? 'Password' : 'Password (leave blank to keep)'}</span>
-            <input type="password" value={form.password} onChange={handleChange('password')} required={mode === 'create'} />
-          </div>
+          {mode === 'create' ? (
+            <div className="modal-field">
+              <span>Password</span>
+              <input type="password" value={form.password} onChange={handleChange('password')} minLength="8" autoComplete="new-password" required />
+            </div>
+          ) : (
+            <div className="modal-field">
+              <span>Password</span>
+              {changePassword ? (
+                <div className="password-change-fields">
+                  <input type="password" placeholder="New password" value={form.password} onChange={handleChange('password')} autoComplete="new-password" />
+                  <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" />
+                  <button type="button" className="small-button" onClick={cancelPasswordChange}>Cancel</button>
+                </div>
+              ) : (
+                <div className="password-change-row">
+                  <span className="password-masked">••••••••</span>
+                  <button
+                    type="button"
+                    className="small-button"
+                    onClick={() => { setChangePassword(true); setError(''); }}
+                  >
+                    Change password
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="modal-field">
             <span>Role</span>
@@ -2141,11 +2340,16 @@ function StaffFormModal({ mode, staff, accessToken, onClose, onSaved }) {
             </div>
           )}
 
-          <label className="modal-check" style={{ alignSelf: 'end' }}>
-            <input type="checkbox" checked={form.is_active} onChange={handleChange('is_active')} />
-            <span>Active</span>
-          </label>
+          <div className={`modal-field${form.role === 'BRANCH_MGR' ? '' : ' staff-field-wide'}`}>
+            <span>Status</span>
+            <label className="modal-check">
+              <input type="checkbox" checked={form.is_active} onChange={handleChange('is_active')} />
+              <span>Active</span>
+            </label>
+          </div>
         </div>
+
+        {error && <div className="modal-error">{error}</div>}
 
         <div className="modal-actions">
           <button type="button" className="small-button" onClick={onClose}>Cancel</button>
@@ -2158,8 +2362,7 @@ function StaffFormModal({ mode, staff, accessToken, onClose, onSaved }) {
   );
 }
 
-function UsersPage({ authData }) {
-  const accessToken = authData.access;
+function UsersPage() {
   const [staff, setStaff] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -2177,9 +2380,7 @@ function UsersPage({ authData }) {
     try {
       const params = new URLSearchParams({ page, page_size: pageSize });
       if (search) params.set('search', search);
-      const res = await fetch(`${API_BASE_URL}/api/staff/?${params}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const res = await apiFetch(`/api/staff/?${params}`);
       const data = await res.json();
       setStaff(data.results || []);
       setTotal(data.count || 0);
@@ -2188,7 +2389,7 @@ function UsersPage({ authData }) {
     } finally {
       setLoading(false);
     }
-  }, [page, search, accessToken]);
+  }, [page, search]);
 
   useEffect(() => { fetchStaff(); }, [fetchStaff]);
 
@@ -2201,9 +2402,8 @@ function UsersPage({ authData }) {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await fetch(`${API_BASE_URL}/api/staff/${deleteTarget.id}/`, {
+      await apiFetch(`/api/staff/${deleteTarget.id}/`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${accessToken}` },
       });
       setDeleteTarget(null);
       fetchStaff();
@@ -2226,9 +2426,8 @@ function UsersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/staff/${id}/`, {
+        apiFetch(`/api/staff/${id}/`, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${accessToken}` },
         })
       )
     );
@@ -2242,9 +2441,9 @@ function UsersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/staff/${id}/`, {
+        apiFetch(`/api/staff/${id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: true }),
         })
       )
@@ -2261,9 +2460,9 @@ function UsersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/staff/${id}/`, {
+        apiFetch(`/api/staff/${id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: false }),
         })
       )
@@ -2395,7 +2594,6 @@ function UsersPage({ authData }) {
         <StaffFormModal
           mode={modal.mode}
           staff={modal.staff}
-          accessToken={accessToken}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); fetchStaff(); }}
         />
@@ -2428,7 +2626,7 @@ function UsersPage({ authData }) {
   );
 }
 
-function BannerFormModal({ mode, banner, accessToken, onClose, onSaved }) {
+function BannerFormModal({ mode, banner, onClose, onSaved }) {
   const [form, setForm] = useState({
     title: banner?.title || '',
     image: null,
@@ -2446,13 +2644,11 @@ function BannerFormModal({ mode, banner, accessToken, onClose, onSaved }) {
   const [cropperSrc, setCropperSrc] = useState(null);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/offers/`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
+    apiFetch(`/api/offers/`)
       .then((r) => r.json())
       .then((data) => setOffers(data.results || []))
       .catch(() => {});
-  }, [accessToken]);
+  }, []);
 
   const handleChange = (field) => (e) => {
     if (field === 'image') {
@@ -2480,14 +2676,14 @@ function BannerFormModal({ mode, banner, accessToken, onClose, onSaved }) {
     e.preventDefault();
     setSaving(true);
     try {
-      const url = mode === 'create'
-        ? `${API_BASE_URL}/api/banners/`
-        : `${API_BASE_URL}/api/banners/${banner.id}/`;
+      const path = mode === 'create'
+        ? '/api/banners/'
+        : `/api/banners/${banner.id}/`;
       const method = mode === 'create' ? 'POST' : 'PUT';
       const hasImage = form.image instanceof File;
 
       let body;
-      let headers = { Authorization: `Bearer ${accessToken}` };
+      let headers = {};
 
       if (hasImage) {
         body = new FormData();
@@ -2514,7 +2710,7 @@ function BannerFormModal({ mode, banner, accessToken, onClose, onSaved }) {
         });
       }
 
-      const res = await fetch(url, { method, headers, body });
+      const res = await apiFetch(path, { method, headers, body });
       if (!res.ok) {
         let errorText = 'Failed to save banner';
         try { const errData = await res.json(); errorText = JSON.stringify(errData); } catch {}
@@ -2592,7 +2788,7 @@ function BannerFormModal({ mode, banner, accessToken, onClose, onSaved }) {
 
             <label className="modal-field">
               <span>Branches</span>
-              <BranchCheckDropdown selected={selectedBranchIds} onChange={setSelectedBranchIds} accessToken={accessToken} />
+              <BranchCheckDropdown selected={selectedBranchIds} onChange={setSelectedBranchIds} />
             </label>
 
             <label className="modal-check">
@@ -2621,8 +2817,7 @@ function BannerFormModal({ mode, banner, accessToken, onClose, onSaved }) {
   );
 }
 
-function BannersPage({ authData }) {
-  const accessToken = authData.access;
+function BannersPage() {
   const [banners, setBanners] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -2640,9 +2835,7 @@ function BannersPage({ authData }) {
     try {
       const params = new URLSearchParams({ page, page_size: pageSize });
       if (search) params.set('search', search);
-      const res = await fetch(`${API_BASE_URL}/api/banners/?${params}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const res = await apiFetch(`/api/banners/?${params}`);
       const data = await res.json();
       setBanners(data.results || []);
       setTotal(data.count || 0);
@@ -2651,7 +2844,7 @@ function BannersPage({ authData }) {
     } finally {
       setLoading(false);
     }
-  }, [page, search, accessToken]);
+  }, [page, search]);
 
   useEffect(() => { fetchBanners(); }, [fetchBanners]);
 
@@ -2664,9 +2857,8 @@ function BannersPage({ authData }) {
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
-      await fetch(`${API_BASE_URL}/api/banners/${deleteTarget.id}/`, {
+      await apiFetch(`/api/banners/${deleteTarget.id}/`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${accessToken}` },
       });
       setDeleteTarget(null);
       fetchBanners();
@@ -2679,6 +2871,22 @@ function BannersPage({ authData }) {
     setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
   };
 
+  const handleToggleActive = async (banner) => {
+    setBulkBusy(true);
+    try {
+      await apiFetch(`/api/banners/${banner.id}/`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: !banner.is_active }),
+      });
+      fetchBanners();
+    } catch (err) {
+      console.error('Failed to update banner', err);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const selectAll = () => {
     const allIds = filteredBanners.map((b) => b.id);
     setSelectedIds((prev) => prev.length === allIds.length ? [] : allIds);
@@ -2689,9 +2897,8 @@ function BannersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/banners/${id}/`, {
+        apiFetch(`/api/banners/${id}/`, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${accessToken}` },
         })
       )
     );
@@ -2705,9 +2912,9 @@ function BannersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/banners/${id}/`, {
+        apiFetch(`/api/banners/${id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: true }),
         })
       )
@@ -2724,9 +2931,9 @@ function BannersPage({ authData }) {
     setBulkBusy(true);
     await Promise.allSettled(
       selectedIds.map((id) =>
-        fetch(`${API_BASE_URL}/api/banners/${id}/`, {
+        apiFetch(`/api/banners/${id}/`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ is_active: false }),
         })
       )
@@ -2765,12 +2972,24 @@ function BannersPage({ authData }) {
       </div>
 
       <section className="panel banners-panel">
-        <div className="filter-tabs">
-          {filterTabs.map((t) => (
-            <button key={t.key} className={`filter-tab ${statusFilter === t.key ? 'active' : ''}`} onClick={() => { setStatusFilter(t.key); setPage(1); }}>
-              {t.label}
-            </button>
-          ))}
+        <div className="banners-toolbar">
+          <div className="filter-tabs">
+            {filterTabs.map((t) => (
+              <button key={t.key} className={`filter-tab ${statusFilter === t.key ? 'active' : ''}`} onClick={() => { setStatusFilter(t.key); setPage(1); }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {filteredBanners.length > 0 && (
+            <label className="banners-select-all">
+              <input
+                type="checkbox"
+                checked={selectedIds.length === filteredBanners.length}
+                onChange={selectAll}
+              />
+              <span>Select all</span>
+            </label>
+          )}
         </div>
 
         {loading ? (
@@ -2782,37 +3001,77 @@ function BannersPage({ authData }) {
             <EmptyState icon={Image} title="No banners yet" description="Create your first banner to promote offers across your branches." actionLabel="Add Banner" onAction={() => setModal({ mode: 'create' })} />
           )
         ) : (
-          <div className="banners-table">
-            <div className="banners-table-head">
-              <label className="bulk-checkbox-cell">
-                <input type="checkbox" checked={selectedIds.length === filteredBanners.length && filteredBanners.length > 0} onChange={selectAll} />
-              </label>
-              <span>Image</span>
-              <span>Title</span>
-              <span>Link</span>
-              <span>Order</span>
-              <span>Status</span>
-              <span>Actions</span>
-            </div>
+          <div className="banners-grid">
             {filteredBanners.map((b) => (
-              <div className="banners-table-row" key={b.id}>
-                <label className="bulk-checkbox-cell">
-                  <input type="checkbox" checked={selectedIds.includes(b.id)} onChange={() => toggleSelect(b.id)} />
-                </label>
-                <div className="banner-image-cell">
-                  {b.image ? <img src={mediaUrl(b.image)} alt="" className="banner-thumb" /> : <span className="banner-thumb-placeholder">—</span>}
+              <article className={`banner-card ${selectedIds.includes(b.id) ? 'selected' : ''}`} key={b.id}>
+                <div className="banner-card-media">
+                  {b.image ? (
+                    <img src={mediaUrl(b.image)} alt={b.title} className="banner-card-img" loading="lazy" />
+                  ) : (
+                    <div className="banner-card-img banner-card-img-empty">
+                      <Image size={30} strokeWidth={1.4} />
+                    </div>
+                  )}
+                  <label className="banner-card-check bulk-checkbox-cell">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(b.id)}
+                      onChange={() => toggleSelect(b.id)}
+                      aria-label={`Select ${b.title}`}
+                    />
+                  </label>
+                  <span className={`banner-card-badge ${b.is_active ? '' : 'off'}`}>
+                    {b.is_active ? 'Active' : 'Inactive'}
+                  </span>
                 </div>
-                <strong>{b.title}</strong>
-                <span className="banner-link">{b.link_url || '—'}</span>
-                <span className="banner-order">{b.order}</span>
-                <span className="banner-status-cell">
-                  <span className={`status ${!b.is_active ? 'pending' : ''}`}>{b.is_active ? 'Active' : 'Inactive'}</span>
-                </span>
-                <span className="banner-actions">
-                  <button onClick={() => setModal({ mode: 'edit', banner: b })} aria-label="Edit"><Edit3 size={16} /></button>
-                  <button onClick={() => setDeleteTarget(b)} aria-label="Delete"><Trash2 size={16} /></button>
-                </span>
-              </div>
+
+                <div className="banner-card-body">
+                  <strong className="banner-card-title" title={b.title}>{b.title}</strong>
+                  <span className="banner-card-link" title={b.link_url || 'No link'}>
+                    {b.link_url || 'No link'}
+                  </span>
+                </div>
+
+                <div className="banner-card-foot">
+                  <span className="banner-card-order">Order #{b.order ?? '—'}</span>
+                  <span className="banner-card-actions">
+                    {b.link_url && (
+                      <a
+                        href={b.link_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="Open link"
+                        title="Open link"
+                      >
+                        <ExternalLink size={15} />
+                      </a>
+                    )}
+                    <button
+                      onClick={() => setModal({ mode: 'edit', banner: b })}
+                      aria-label="Edit"
+                      title="Edit"
+                    >
+                      <Edit3 size={15} />
+                    </button>
+                    <button
+                      onClick={() => handleToggleActive(b)}
+                      disabled={bulkBusy}
+                      aria-label={b.is_active ? 'Set Inactive' : 'Set Active'}
+                      title={b.is_active ? 'Set Inactive' : 'Set Active'}
+                    >
+                      {b.is_active ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                    <button
+                      onClick={() => setDeleteTarget(b)}
+                      className="danger"
+                      aria-label="Delete"
+                      title="Delete"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </span>
+                </div>
+              </article>
             ))}
           </div>
         )}
@@ -2830,7 +3089,6 @@ function BannersPage({ authData }) {
         <BannerFormModal
           mode={modal.mode}
           banner={modal.banner}
-          accessToken={accessToken}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); fetchBanners(); }}
         />
@@ -2863,8 +3121,272 @@ function BannersPage({ authData }) {
   );
 }
 
-function ActivityLogPage({ authData }) {
-  const accessToken = authData.access;
+function NotificationFormModal({ onClose, onSaved }) {
+  const [form, setForm] = useState({
+    title: '',
+    body: '',
+    type: 'COMMON',
+    linked_offer: '',
+    is_active: true,
+    image: null,
+  });
+  const [sendToAll, setSendToAll] = useState(true);
+  const [selectedBranchIds, setSelectedBranchIds] = useState([]);
+  const [branches, setBranches] = useState([]);
+  const [offers, setOffers] = useState([]);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    Promise.all([
+      apiFetch('/api/branches/').then((res) => res.json()),
+      apiFetch('/api/offers/admin_all/').then((res) => res.json()),
+    ]).then(([branchData, offerData]) => {
+      setBranches(branchData.results || branchData || []);
+      setOffers(offerData.results || offerData || []);
+    }).catch(() => setError('Could not load branches and offers.'));
+  }, []);
+
+  const handleChange = (field) => (event) => {
+    if (field === 'image') {
+      const file = event.target.files?.[0] || null;
+      setForm((prev) => ({ ...prev, image: file }));
+      setImagePreview(file ? URL.createObjectURL(file) : null);
+      return;
+    }
+    if (field === 'is_active') {
+      setForm((prev) => ({ ...prev, is_active: event.target.checked }));
+      return;
+    }
+    setForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+
+    try {
+      const body = new FormData();
+      body.append('title', form.title.trim());
+      body.append('body', form.body.trim());
+      body.append('type', form.type);
+      body.append('is_active', form.is_active ? 'true' : 'false');
+      if (form.linked_offer) body.append('linked_offer', form.linked_offer);
+      if (form.image) body.append('image', form.image);
+      if (!sendToAll) selectedBranchIds.forEach((id) => body.append('target_branches', id));
+
+      const res = await apiFetch('/api/notifications/', { method: 'POST', body });
+      if (!res.ok) {
+        let message = 'Could not send notification.';
+        try { message = JSON.stringify(await res.json()); } catch {}
+        throw new Error(message);
+      }
+      onSaved();
+    } catch (err) {
+      setError(err.message || 'Could not send notification.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <form className="modal-card notification-modal-card" onClick={(event) => event.stopPropagation()} onSubmit={handleSubmit}>
+        <div className="modal-head">
+          <h3>Send Notification</h3>
+          <button type="button" className="profile-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        </div>
+
+        {error && <p className="notification-form-error">{error}</p>}
+
+        <div className="notification-form-grid">
+          <div>
+            <label className="modal-field">
+              <span>Title</span>
+              <input value={form.title} onChange={handleChange('title')} maxLength="200" required />
+            </label>
+            <label className="modal-field">
+              <span>Message</span>
+              <textarea value={form.body} onChange={handleChange('body')} rows="5" required />
+            </label>
+            <label className="modal-field">
+              <span>Image</span>
+              <input type="file" accept="image/*" onChange={handleChange('image')} />
+            </label>
+            {imagePreview && <img src={imagePreview} alt="Notification preview" className="notification-preview" />}
+          </div>
+
+          <div>
+            <label className="modal-field">
+              <span>Notification Type</span>
+              <select className="modal-select" value={form.type} onChange={handleChange('type')}>
+                <option value="COMMON">Common</option>
+                <option value="OFFER">Offer</option>
+                <option value="PROMO">Promo</option>
+              </select>
+            </label>
+            <label className="modal-field">
+              <span>Linked Offer</span>
+              <select className="modal-select" value={form.linked_offer} onChange={handleChange('linked_offer')}>
+                <option value="">No linked offer</option>
+                {offers.map((offer) => <option key={offer.id} value={offer.id}>{offer.title}</option>)}
+              </select>
+            </label>
+            <label className="modal-check notification-audience-toggle">
+              <input type="checkbox" checked={sendToAll} onChange={(event) => setSendToAll(event.target.checked)} />
+              <span>Send to all users with FCM tokens</span>
+            </label>
+            {!sendToAll && (
+              <label className="modal-field">
+                <span>Target Branches</span>
+                <BranchCheckDropdown selected={selectedBranchIds} onChange={setSelectedBranchIds} branches={branches} />
+              </label>
+            )}
+            <label className="modal-check">
+              <input type="checkbox" checked={form.is_active} onChange={handleChange('is_active')} />
+              <span>Active</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="modal-actions">
+          <button type="button" className="small-button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="primary-button modal-submit" disabled={saving}>
+            <Bell size={16} /> {saving ? 'Sending...' : 'Send Notification'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function NotificationsPage() {
+  const [notifications, setNotifications] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [actionError, setActionError] = useState('');
+
+  const fetchNotifications = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await apiFetch('/api/notifications/');
+      if (!res.ok) throw new Error('Could not load notifications.');
+      const data = await res.json();
+      setNotifications(data.results || data || []);
+    } catch (err) {
+      setActionError(err.message || 'Could not load notifications.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchNotifications(); }, [fetchNotifications]);
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      const res = await apiFetch(`/api/notifications/${deleteTarget.id}/`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Could not delete notification.');
+      setDeleteTarget(null);
+      fetchNotifications();
+    } catch (err) {
+      setActionError(err.message || 'Could not delete notification.');
+    }
+  };
+
+  const visibleNotifications = notifications.filter((notification) => {
+    const matchesType = typeFilter === 'all' || notification.type === typeFilter;
+    const query = search.trim().toLowerCase();
+    const matchesSearch = !query || notification.title.toLowerCase().includes(query) || notification.body.toLowerCase().includes(query);
+    return matchesType && matchesSearch;
+  });
+
+  return (
+    <>
+      <div className="hero-row">
+        <div>
+          <p>Customer Messaging</p>
+          <h2>Notifications</h2>
+        </div>
+        <div className="filters">
+          <div className="search-field">
+            <Search size={17} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search notifications..." />
+          </div>
+          <button className="primary-button" onClick={() => setModalOpen(true)}>
+            <Bell size={18} /> Send Notification
+          </button>
+        </div>
+      </div>
+
+      {actionError && <p className="notification-page-error">{actionError}</p>}
+
+      <section className="panel notifications-panel">
+        <div className="filter-tabs">
+          {['all', 'COMMON', 'OFFER', 'PROMO'].map((type) => (
+            <button key={type} className={`filter-tab ${typeFilter === type ? 'active' : ''}`} onClick={() => setTypeFilter(type)}>
+              {type === 'all' ? 'All' : type[0] + type.slice(1).toLowerCase()}
+            </button>
+          ))}
+        </div>
+
+        {loading ? (
+          <p className="table-loading">Loading notifications...</p>
+        ) : visibleNotifications.length === 0 ? (
+          <EmptyState icon={Bell} title="No notifications found" description="Send a notification to reach users with registered devices." actionLabel="Send Notification" onAction={() => setModalOpen(true)} />
+        ) : (
+          <div className="notifications-list">
+            {visibleNotifications.map((notification) => (
+              <article className="notification-row" key={notification.id}>
+                <div className="notification-image">
+                  {notification.image ? <img src={mediaUrl(notification.image)} alt="" /> : <Bell size={20} />}
+                </div>
+                <div className="notification-content">
+                  <div className="notification-title-row">
+                    <strong>{notification.title}</strong>
+                    <span className={`notification-type type-${notification.type.toLowerCase()}`}>{notification.type}</span>
+                  </div>
+                  <p>{notification.body}</p>
+                  <span>{new Date(notification.sent_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                </div>
+                <button className="notification-delete" onClick={() => setDeleteTarget(notification)} aria-label={`Delete ${notification.title}`} title="Delete">
+                  <Trash2 size={16} />
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {modalOpen && (
+        <NotificationFormModal
+          onClose={() => setModalOpen(false)}
+          onSaved={() => { setModalOpen(false); fetchNotifications(); window.__showToast?.('Notification sent successfully.'); }}
+        />
+      )}
+
+      {deleteTarget && (
+        <div className="modal-overlay" onClick={() => setDeleteTarget(null)}>
+          <div className="modal-card confirm-card" onClick={(event) => event.stopPropagation()}>
+            <h3>Delete Notification</h3>
+            <p>Delete <strong>{deleteTarget.title}</strong>? This also removes its user read history.</p>
+            <div className="modal-actions">
+              <button className="small-button" onClick={() => setDeleteTarget(null)}>Cancel</button>
+              <button className="danger-button" onClick={handleDelete}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ActivityLogPage() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [entityFilter, setEntityFilter] = useState('all');
@@ -2877,9 +3399,7 @@ function ActivityLogPage({ authData }) {
       if (entityFilter !== 'all') params.set('entity_type', entityFilter);
       if (actionFilter !== 'all') params.set('action', actionFilter);
       const qs = params.toString();
-      const res = await fetch(`${API_BASE_URL}/api/activity-logs/${qs ? '?' + qs : ''}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const res = await apiFetch(`/api/activity-logs/${qs ? '?' + qs : ''}`);
       const data = await res.json();
       setLogs(Array.isArray(data) ? data : data.results || []);
     } catch (err) {
@@ -2887,7 +3407,7 @@ function ActivityLogPage({ authData }) {
     } finally {
       setLoading(false);
     }
-  }, [accessToken, entityFilter, actionFilter]);
+  }, [entityFilter, actionFilter]);
 
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
 
@@ -2994,19 +3514,27 @@ function ActivityLogPage({ authData }) {
 
 
 function App() {
-  const [authData, setAuthData] = useState(null);
+  const [authData, setAuthData] = useState(() => getSession());
   const [activePage, setActivePage] = useState('Dashboard');
   const [showSearch, setShowSearch] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState(null);
   const [navItems, setNavItems] = useState(loadNavItems);
   const [editMode, setEditMode] = useState(false);
   const [toast, setToast] = useState(null);
+
+  useEffect(() => subscribeToSession(setAuthData), []);
+
+  useEffect(() => {
+    if (getSession()) refreshSession();
+  }, []);
 
   useEffect(() => {
     window.__showToast = (msg) => setToast(msg);
     return () => { delete window.__showToast; };
   }, []);
 
-  const navigateTo = useCallback((page) => {
+  const navigateTo = useCallback((page, options = {}) => {
+    setSelectedBranch(page === 'Branches' ? options.branch || null : null);
     setActivePage(page);
     window.scrollTo({ top: 0 });
     const content = document.querySelector('.content');
@@ -3026,23 +3554,30 @@ function App() {
     setEditMode((prev) => !prev);
   }, []);
 
+  const publicFormMatch = window.location.pathname.match(/^\/forms\/([0-9a-f-]+)\/?$/i);
+  if (publicFormMatch) {
+    return <PublicFormPage apiFetch={apiFetch} publicId={publicFormMatch[1]} apiBase={API_BASE_URL} />;
+  }
+
   if (!authData) {
-    return <LoginPage onLogin={(data) => setAuthData(data)} />;
+    return <LoginPage onLogin={(data) => setSession(data)} />;
   }
 
   const pages = {
-    Dashboard: <DashboardPage authData={authData} />,
-    Branches: <BranchesPage authData={authData} />,
-    Offers: <OffersPage authData={authData} />,
-    Banners: <BannersPage authData={authData} />,
-    Users: <UsersPage authData={authData} />,
-    Activity: <ActivityLogPage authData={authData} />,
+    Dashboard: <DashboardPage authData={authData} onNavigate={navigateTo} />,
+    Branches: <BranchesPage selectedBranch={selectedBranch} onClearSelectedBranch={() => setSelectedBranch(null)} />,
+    Offers: <OffersPage />,
+    Banners: <BannersPage />,
+    Notifications: <NotificationsPage />,
+    Forms: <CustomFormsPage apiFetch={apiFetch} apiBase={API_BASE_URL} />,
+    Users: <UsersPage />,
+    Activity: <ActivityLogPage />,
   };
 
   return (
     <main className="page">
       <div className="app-shell">
-        <Rail authData={authData} onOpenSearch={() => setShowSearch(true)} onLogout={() => setAuthData(null)} editMode={editMode} onToggleEdit={toggleEditMode} />
+        <Rail authData={authData} onOpenSearch={() => setShowSearch(true)} onLogout={() => setSession(null)} editMode={editMode} onToggleEdit={toggleEditMode} />
         <div className="workspace">
           <Sidebar activePage={activePage} onNavigate={navigateTo} navItems={navItems} editMode={editMode} onToggleEdit={toggleEditMode} onReorder={handleReorder} />
           <section className="content">
@@ -3050,13 +3585,12 @@ function App() {
               <div />
               <div />
             </header>
-            {pages[activePage] || <DashboardPage user={user} />}
+            {pages[activePage] || <DashboardPage authData={authData} onNavigate={navigateTo} />}
       </section>
         </div>
       </div>
       {showSearch && (
         <GlobalSearch
-          accessToken={authData.access}
           onClose={() => setShowSearch(false)}
           onNavigate={navigateTo}
         />
