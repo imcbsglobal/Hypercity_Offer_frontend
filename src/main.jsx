@@ -37,7 +37,6 @@ import {
   Phone,
   Plus,
   Search,
-  Settings,
   ShieldCheck,
   Sparkles,
   Store,
@@ -287,13 +286,13 @@ const defaultNavItems = [
   { icon: Grid2X2Plus, label: 'Offers' },
   { icon: Image, label: 'Banners' },
   { icon: Bell, label: 'Notifications' },
+  { icon: Users, label: 'Customers' },
   { icon: ClipboardList, label: 'Forms' },
   { icon: Users, label: 'Users' },
   { icon: Clock3, label: 'Activity' },
-  { icon: Settings, label: 'Settings' },
 ];
 
-const iconMap = { Home, Store, Grid2X2Plus, Image, Bell, ClipboardList, Users, Settings };
+const iconMap = { Home, Store, Grid2X2Plus, Image, Bell, ClipboardList, Users };
 
 function loadNavItems() {
   try {
@@ -314,7 +313,7 @@ function saveNavItems(items) {
   localStorage.setItem('sidebar-order', JSON.stringify(items.map((i) => i.label)));
 }
 
-const quickActions = [LogOut, Search, Target, Grid2X2Plus, Clock3];
+const quickActions = [LogOut, Search, Target];
 
 function LoginPage({ onLogin }) {
   const [phone, setPhone] = useState('');
@@ -2626,6 +2625,134 @@ function UsersPage() {
   );
 }
 
+function AccountUsersPage() {
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [role, setRole] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const pageSize = 20;
+
+  const fetchRows = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams({ page: String(page) });
+      if (search) params.set('search', search);
+      if (role) params.set('role', role);
+      const res = await apiFetch(`/api/users/?${params}`);
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      const data = await res.json();
+      setRows(data.results || []);
+      setTotal(data.count || 0);
+    } catch (err) {
+      console.error('Failed to fetch users', err);
+      setError('Could not load users from accounts_user.');
+    } finally {
+      setLoading(false);
+    }
+  }, [page, search, role]);
+
+  useEffect(() => { fetchRows(); }, [fetchRows]);
+
+  const totalPages = Math.ceil(total / pageSize);
+  const roleLabel = (value) => {
+    if (value === 'BRANCH_MGR') return 'Branch Manager';
+    if (value === 'SUPER_ADMIN') return 'Super Admin';
+    if (value === 'MARKETING') return 'Marketing';
+    return value;
+  };
+  const formatDate = (iso) => {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  return (
+    <>
+      <div className="hero-row">
+        <div>
+          <p>Account users</p>
+          <h2>Customers</h2>
+        </div>
+        <div className="filters">
+          <div className="search-field">
+            <Search size={17} />
+            <input type="text" placeholder="Search phone, name, email..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+          </div>
+          <div className="search-field">
+            <Filter size={17} />
+            <select value={role} onChange={(e) => { setRole(e.target.value); setPage(1); }} aria-label="Filter by role">
+              <option value="">All roles</option>
+              <option value="CUSTOMER">Customer</option>
+              <option value="SUPER_ADMIN">Super Admin</option>
+              <option value="BRANCH_MGR">Branch Manager</option>
+              <option value="MARKETING">Marketing</option>
+            </select>
+          </div>
+          <button className="export-button" onClick={() => exportToExcel(rows, [
+            { header: 'Name', getValue: (r) => r.name },
+            { header: 'Phone', getValue: (r) => r.phone },
+            { header: 'Email', getValue: (r) => r.email || '—' },
+            { header: 'Role', getValue: (r) => roleLabel(r.role) },
+            { header: 'Joined', getValue: (r) => formatDate(r.date_joined) },
+            { header: 'Status', getValue: (r) => r.is_active ? 'Active' : 'Inactive' },
+          ], 'users')}>
+            <Download size={16} /> Export
+          </button>
+        </div>
+      </div>
+
+      <section className="panel">
+        {error && <div className="login-error">{error}</div>}
+        {loading ? (
+          <p className="table-loading">Loading users...</p>
+        ) : rows.length === 0 ? (
+          <EmptyState icon={Users} title="No users found" description="No accounts_user records match the current filters." />
+        ) : (
+          <div className="customer-table">
+            <div className="customer-table-head">
+              <span>User</span>
+              <span>Phone</span>
+              <span className="customer-place">Role</span>
+              <span className="customer-client">Email</span>
+              <span>Joined</span>
+              <span>Status</span>
+            </div>
+            {rows.map((row) => (
+              <div className="customer-table-row" key={row.id}>
+                <div className="customer-info">
+                  <span className="staff-avatar">{row.name?.[0] || 'U'}</span>
+                  <div>
+                    <strong>{row.name}</strong>
+                    <span>{row.first_name || row.last_name ? `${row.first_name || ''} ${row.last_name || ''}`.trim() : row.role}</span>
+                  </div>
+                </div>
+                <span>{row.phone}</span>
+                <span className={`customer-place staff-role ${row.role === 'CUSTOMER' ? 'role-mkt' : 'role-mgr'}`}>
+                  {roleLabel(row.role)}
+                </span>
+                <span className="customer-client">{row.email || '—'}</span>
+                <span>{formatDate(row.date_joined)}</span>
+                <span className={`status ${!row.is_active ? 'pending' : ''}`}>{row.is_active ? 'Active' : 'Inactive'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {totalPages > 1 && (
+          <div className="pagination">
+            <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}><ChevronLeft size={16} /> Prev</button>
+            <span>Page {page} of {totalPages}</span>
+            <button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next <ChevronRight size={16} /></button>
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
 function BannerFormModal({ mode, banner, onClose, onSaved }) {
   const [form, setForm] = useState({
     title: banner?.title || '',
@@ -3569,6 +3696,7 @@ function App() {
     Offers: <OffersPage />,
     Banners: <BannersPage />,
     Notifications: <NotificationsPage />,
+    Customers: <AccountUsersPage />,
     Forms: <CustomFormsPage apiFetch={apiFetch} apiBase={API_BASE_URL} />,
     Users: <UsersPage />,
     Activity: <ActivityLogPage />,
