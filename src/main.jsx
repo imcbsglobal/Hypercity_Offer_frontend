@@ -52,6 +52,7 @@ import { CustomFormsPage, PublicFormPage } from './customForms';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const AUTH_STORAGE_KEY = 'admin-auth';
+const ACC_MASTER_API_URL = `${(import.meta.env.VITE_ACC_MASTER_API_URL || 'https://hs.hypercityllp.in/api/synctool/acc-master').replace(/\/+$/, '')}/`;
 const OFFER_IMAGE_ASPECT = 9 / 16;
 const BANNER_IMAGE_ASPECT = 16 / 9;
 const CROP_PRESETS = [
@@ -129,13 +130,14 @@ async function apiFetch(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   const access = session?.access;
   if (access) headers.Authorization = `Bearer ${access}`;
+  const url = /^https?:\/\//i.test(path) ? path : `${API_BASE_URL}${path}`;
 
-  const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+  const res = await fetch(url, { ...options, headers });
 
   if (res.status === 401 && session?.refresh) {
     const refreshed = await refreshSession();
     if (refreshed) {
-      return fetch(`${API_BASE_URL}${path}`, {
+      return fetch(url, {
         ...options,
         headers: { ...headers, Authorization: `Bearer ${refreshed.access}` },
       });
@@ -2109,9 +2111,27 @@ function OffersPage() {
   ];
 
   const formatDate = (iso) => {
-    const d = new Date(iso);
-    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    if (!iso) return '—';
+    return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
   };
+  const exportColumns = isExisting
+    ? [
+        { header: 'Code', getValue: (r) => r.code || '—' },
+        { header: 'Name', getValue: (r) => r.name },
+        { header: 'Phone', getValue: (r) => r.phone2 || '—' },
+        { header: 'Place', getValue: (r) => r.place || '—' },
+        { header: 'Super Code', getValue: (r) => r.super_code || '—' },
+        { header: 'Client ID', getValue: (r) => r.client_id || '—' },
+        { header: 'Synced', getValue: (r) => formatDate(r.synced_at) },
+      ]
+    : [
+        { header: 'Name', getValue: (r) => r.name },
+        { header: 'Phone', getValue: (r) => r.phone },
+        { header: 'Email', getValue: (r) => r.email || '—' },
+        { header: 'Role', getValue: (r) => roleLabel(r.role) },
+        { header: 'Joined', getValue: (r) => formatDate(r.date_joined) },
+        { header: 'Status', getValue: (r) => r.is_active ? 'Active' : 'Inactive' },
+      ];
 
   return (
     <>
@@ -2708,6 +2728,7 @@ function UsersPage() {
 }
 
 function AccountUsersPage() {
+  const [source, setSource] = useState('app');
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -2716,6 +2737,7 @@ function AccountUsersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const pageSize = 20;
+  const isExisting = source === 'existing';
 
   const fetchRows = useCallback(async () => {
     setLoading(true);
@@ -2723,21 +2745,32 @@ function AccountUsersPage() {
     try {
       const params = new URLSearchParams({ page: String(page) });
       if (search) params.set('search', search);
-      if (role) params.set('role', role);
-      const res = await apiFetch(`/api/users/?${params}`);
+      if (!isExisting && role) params.set('role', role);
+      const url = isExisting
+        ? `${ACC_MASTER_API_URL}?${params}`
+        : `/api/users/?${params}`;
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
       const data = await res.json();
       setRows(data.results || []);
       setTotal(data.count || 0);
     } catch (err) {
-      console.error('Failed to fetch users', err);
-      setError('Could not load users from accounts_user.');
+      console.error('Failed to fetch customers', err);
+      setError(isExisting ? 'Could not load existing customers.' : 'Could not load users from accounts_user.');
     } finally {
       setLoading(false);
     }
-  }, [page, search, role]);
+  }, [page, search, role, isExisting]);
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
+
+  const changeSource = (next) => {
+    if (next === source) return;
+    setSource(next);
+    setPage(1);
+    setSearch('');
+    setRole('');
+  };
 
   const totalPages = Math.ceil(total / pageSize);
   const roleLabel = (value) => {
@@ -2761,63 +2794,108 @@ function AccountUsersPage() {
         <div className="filters">
           <div className="search-field">
             <Search size={17} />
-            <input type="text" placeholder="Search phone, name, email..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+            <input
+              type="text"
+              placeholder={isExisting ? 'Search code, name, place...' : 'Search phone, name, email...'}
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            />
           </div>
-          <div className="search-field">
-            <Filter size={17} />
-            <select value={role} onChange={(e) => { setRole(e.target.value); setPage(1); }} aria-label="Filter by role">
-              <option value="">All roles</option>
-              <option value="CUSTOMER">Customer</option>
-              <option value="SUPER_ADMIN">Super Admin</option>
-              <option value="BRANCH_MGR">Branch Manager</option>
-              <option value="MARKETING">Marketing</option>
-            </select>
-          </div>
-          <button className="export-button" onClick={() => exportToExcel(rows, [
-            { header: 'Name', getValue: (r) => r.name },
-            { header: 'Phone', getValue: (r) => r.phone },
-            { header: 'Email', getValue: (r) => r.email || '—' },
-            { header: 'Role', getValue: (r) => roleLabel(r.role) },
-            { header: 'Joined', getValue: (r) => formatDate(r.date_joined) },
-            { header: 'Status', getValue: (r) => r.is_active ? 'Active' : 'Inactive' },
-          ], 'users')}>
+          {!isExisting && (
+            <div className="search-field">
+              <Filter size={17} />
+              <select value={role} onChange={(e) => { setRole(e.target.value); setPage(1); }} aria-label="Filter by role">
+                <option value="">All roles</option>
+                <option value="CUSTOMER">Customer</option>
+                <option value="SUPER_ADMIN">Super Admin</option>
+                <option value="BRANCH_MGR">Branch Manager</option>
+                <option value="MARKETING">Marketing</option>
+              </select>
+            </div>
+          )}
+          <button className="export-button" onClick={() => exportToExcel(rows, exportColumns, isExisting ? 'existing-customers' : 'users')}>
             <Download size={16} /> Export
           </button>
         </div>
       </div>
 
+      <div className="filter-tabs customer-source-tabs">
+        <button type="button" className={`filter-tab ${!isExisting ? 'active' : ''}`} onClick={() => changeSource('app')}>
+          App Registered
+        </button>
+        <button type="button" className={`filter-tab ${isExisting ? 'active' : ''}`} onClick={() => changeSource('existing')}>
+          Existing Customers
+        </button>
+      </div>
+
       <section className="panel">
         {error && <div className="login-error">{error}</div>}
         {loading ? (
-          <p className="table-loading">Loading users...</p>
+          <p className="table-loading">Loading customers...</p>
         ) : rows.length === 0 ? (
-          <EmptyState icon={Users} title="No users found" description="No accounts_user records match the current filters." />
+          <EmptyState
+            icon={Users}
+            title="No customers found"
+            description={isExisting ? 'No acc-master records match the current filters.' : 'No accounts_user records match the current filters.'}
+          />
         ) : (
           <div className="customer-table">
             <div className="customer-table-head">
-              <span>User</span>
-              <span>Phone</span>
-              <span className="customer-place">Role</span>
-              <span className="customer-client">Email</span>
-              <span>Joined</span>
-              <span>Status</span>
+              {isExisting ? (
+                <>
+                  <span>Code</span>
+                  <span>Customer</span>
+                  <span>Phone</span>
+                  <span className="customer-place">Place</span>
+                  <span className="customer-client">Super Code</span>
+                  <span>Synced</span>
+                </>
+              ) : (
+                <>
+                  <span>User</span>
+                  <span>Phone</span>
+                  <span className="customer-place">Role</span>
+                  <span className="customer-client">Email</span>
+                  <span>Joined</span>
+                  <span>Status</span>
+                </>
+              )}
             </div>
             {rows.map((row) => (
               <div className="customer-table-row" key={row.id}>
-                <div className="customer-info">
-                  <span className="staff-avatar">{row.name?.[0] || 'U'}</span>
-                  <div>
-                    <strong>{row.name}</strong>
-                    <span>{row.first_name || row.last_name ? `${row.first_name || ''} ${row.last_name || ''}`.trim() : row.role}</span>
-                  </div>
-                </div>
-                <span>{row.phone}</span>
-                <span className={`customer-place staff-role ${row.role === 'CUSTOMER' ? 'role-mkt' : 'role-mgr'}`}>
-                  {roleLabel(row.role)}
-                </span>
-                <span className="customer-client">{row.email || '—'}</span>
-                <span>{formatDate(row.date_joined)}</span>
-                <span className={`status ${!row.is_active ? 'pending' : ''}`}>{row.is_active ? 'Active' : 'Inactive'}</span>
+                {isExisting ? (
+                  <>
+                    <span>{row.code || '—'}</span>
+                    <div className="customer-info">
+                      <span className="staff-avatar">{row.name?.[0] || 'C'}</span>
+                      <div>
+                        <strong>{row.name}</strong>
+                        <span>{row.client_id || '—'}</span>
+                      </div>
+                    </div>
+                    <span>{row.phone2 || '—'}</span>
+                    <span className="customer-place">{row.place || '—'}</span>
+                    <span className="customer-client">{row.super_code || '—'}</span>
+                    <span>{formatDate(row.synced_at)}</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="customer-info">
+                      <span className="staff-avatar">{row.name?.[0] || 'U'}</span>
+                      <div>
+                        <strong>{row.name}</strong>
+                        <span>{row.first_name || row.last_name ? `${row.first_name || ''} ${row.last_name || ''}`.trim() : row.role}</span>
+                      </div>
+                    </div>
+                    <span>{row.phone}</span>
+                    <span className={`customer-place staff-role ${row.role === 'CUSTOMER' ? 'role-mkt' : 'role-mgr'}`}>
+                      {roleLabel(row.role)}
+                    </span>
+                    <span className="customer-client">{row.email || '—'}</span>
+                    <span>{formatDate(row.date_joined)}</span>
+                    <span className={`status ${!row.is_active ? 'pending' : ''}`}>{row.is_active ? 'Active' : 'Inactive'}</span>
+                  </>
+                )}
               </div>
             ))}
           </div>
