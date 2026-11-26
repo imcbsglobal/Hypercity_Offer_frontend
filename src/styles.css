@@ -1636,15 +1636,19 @@ button {
 }
 
 .offer-preview {
-  width: 100%;
-  max-height: 160px;
-  object-fit: cover;
+  display: block;
+  height: 220px;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
   border-radius: 12px;
   margin-top: 6px;
 }
 
 .offer-preview-wrap {
   position: relative;
+  width: fit-content;
+  max-width: 100%;
   margin-top: 6px;
 }
 
@@ -2869,12 +2873,57 @@ button {
   background: #1a1a2e;
 }
 
+.crop-free-frame {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.crop-free-handle {
+  position: absolute;
+  right: -9px;
+  bottom: -9px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--blue);
+  background: #fff;
+  cursor: nwse-resize;
+  pointer-events: auto;
+}
+
 .cropper-controls {
   padding: 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 14px;
   border-top: 1px solid var(--line);
+}
+
+.cropper-ratio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.crop-ratio-button {
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: #526078;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.crop-ratio-button.active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
 }
 
 .cropper-zoom-row {

@@ -52,6 +52,14 @@ import { CustomFormsPage, PublicFormPage } from './customForms';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const AUTH_STORAGE_KEY = 'admin-auth';
+const OFFER_IMAGE_ASPECT = 9 / 16;
+const BANNER_IMAGE_ASPECT = 16 / 9;
+const CROP_PRESETS = [
+  { label: 'Poster 9:16', value: 9 / 16 },
+  { label: 'Banner 16:9', value: 16 / 9 },
+  { label: 'Square 1:1', value: 1 },
+  { label: 'Free', value: null },
+];
 
 function readStoredAuth() {
   try {
@@ -175,11 +183,54 @@ function getCroppedImg(imageSrc, pixelCrop) {
 function ImageCropperModal({ imageSrc, aspect, onCrop, onCancel }) {
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
+  const [selectedRatio, setSelectedRatio] = useState(aspect);
+  const [autoCropSize, setAutoCropSize] = useState(null);
+  const [freeCropSize, setFreeCropSize] = useState(null);
+  const [resizeStart, setResizeStart] = useState(null);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
+  const bodyRef = useRef(null);
 
   const onCropComplete = useCallback((_, area) => {
     setCroppedAreaPixels(area);
   }, []);
+
+  const onCropSizeChange = useCallback((size) => {
+    setAutoCropSize((prev) => (
+      prev && Math.abs(prev.width - size.width) < 1 && Math.abs(prev.height - size.height) < 1
+        ? prev
+        : size
+    ));
+  }, []);
+
+  useEffect(() => {
+    if (selectedRatio !== null || freeCropSize || !autoCropSize) return;
+    setFreeCropSize({ ...autoCropSize });
+  }, [selectedRatio, freeCropSize, autoCropSize]);
+
+  useEffect(() => {
+    if (!resizeStart) return undefined;
+    const handleMove = (e) => {
+      const rect = bodyRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(rect.width, Math.max(60, resizeStart.width + (e.clientX - resizeStart.x) * 2));
+      const height = Math.min(rect.height, Math.max(60, resizeStart.height + (e.clientY - resizeStart.y) * 2));
+      setFreeCropSize({ width, height });
+    };
+    const handleUp = () => setResizeStart(null);
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, [resizeStart]);
+
+  const handleRatioChange = (value) => {
+    setSelectedRatio(value);
+    setFreeCropSize(value === null && autoCropSize ? { ...autoCropSize } : null);
+    setCrop({ x: 0, y: 0 });
+    setZoom(1);
+  };
 
   const handleCrop = async (e) => {
     e.preventDefault();
@@ -200,18 +251,49 @@ function ImageCropperModal({ imageSrc, aspect, onCrop, onCancel }) {
           <h3>Crop Image</h3>
           <button type="button" className="profile-close" onClick={onCancel}><X size={18} /></button>
         </div>
-        <div className="cropper-body">
+        <div className="cropper-body" ref={bodyRef}>
           <Cropper
             image={imageSrc}
             crop={crop}
             zoom={zoom}
-            aspect={aspect}
+            aspect={selectedRatio ?? aspect}
+            cropSize={freeCropSize || undefined}
+            onCropSizeChange={onCropSizeChange}
             onCropChange={setCrop}
             onZoomChange={setZoom}
             onCropComplete={onCropComplete}
           />
+          {freeCropSize && (
+            <div
+              className="crop-free-frame"
+              style={{ width: freeCropSize.width, height: freeCropSize.height }}
+            >
+              <button
+                type="button"
+                className="crop-free-handle"
+                aria-label="Resize crop area"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setResizeStart({ x: e.clientX, y: e.clientY, width: freeCropSize.width, height: freeCropSize.height });
+                }}
+              />
+            </div>
+          )}
         </div>
         <div className="cropper-controls">
+          <div className="cropper-ratio-row">
+            {CROP_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                className={`crop-ratio-button ${selectedRatio === preset.value ? 'active' : ''}`}
+                onClick={() => handleRatioChange(preset.value)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
           <div className="cropper-zoom-row">
             <label>Zoom</label>
             <input
@@ -1615,7 +1697,7 @@ function OfferFormModal({ mode, offer, onClose, onSaved }) {
       {cropperSrc && (
         <ImageCropperModal
           imageSrc={cropperSrc}
-          aspect={16 / 9}
+          aspect={OFFER_IMAGE_ASPECT}
           onCrop={handleCropped}
           onCancel={() => setCropperSrc(null)}
         />
@@ -2935,7 +3017,7 @@ function BannerFormModal({ mode, banner, onClose, onSaved }) {
       {cropperSrc && (
         <ImageCropperModal
           imageSrc={cropperSrc}
-          aspect={16 / 9}
+          aspect={BANNER_IMAGE_ASPECT}
           onCrop={handleCropped}
           onCancel={() => setCropperSrc(null)}
         />
